@@ -1,0 +1,105 @@
+name: Build final pool
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: finalpool
+          fetch-depth: 0
+
+      - name: Assemble implemented task pool
+        env:
+          TASK_NAMES: >-
+            activity-logger alert-system analytics-dashboard asset-optimizer
+            backup-utility blog-engine booking-system cache-optimizer calendar-sync
+            canvas-automation canvas-grade-automation certificate-manager chat-bot
+            client-portal cms-builder contact-manager content-manager content-scheduler
+            coupon-manager crm-system customer-feedback-processor customer-portal
+            data-analytics data-validator deal-manager deployment-tool discount-calculator
+            email-campaign email-classification-system error-tracker expense-tracker
+            feedback-collector file-manager follow-up-reminder form-builder health-monitor
+            help-desk image-processor inventory-management invoice-generator load-balancer
+            log-analyzer loyalty-program media-organizer monitoring-agent network-analyzer
+            order-processor payment-processor pdf-report-generator permission-manager
+            personalization-service price-tracker product-catalog qr-generator reminder-service
+            robots-handler sales-pipeline scheduler search-engine security-scanner
+            sentiment-analyzer shipment-tracker sitemap-generator social-connector
+            social-publisher status-checker storage-manager streaming-service subtitle-generator
+            survey-builder sync-service tag-manager task-scheduler template-engine
+            territory-manager translation-api video-trimmer voice-processor web-crawler
+        run: |
+          set -euo pipefail
+          git config user.name 'Task Tracker Automation'
+          git config user.email 'automation@local'
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import shutil
+          import subprocess
+          import tempfile
+
+          wanted = os.environ['TASK_NAMES'].split()
+          assert len(wanted) == len(set(wanted)) == 79
+          refs = subprocess.check_output(
+              ['git', 'branch', '-r', '--format=%(refname:short)'], text=True
+          ).split()
+          source_locations = {}
+          for ref in refs:
+              branch = ref.rsplit('/', 1)[-1]
+              if branch in {'main', 'finalpool', 'finalpool-workflow'}:
+                  continue
+              paths = subprocess.check_output(
+                  ['git', 'ls-tree', '-r', '--name-only', ref, 'tasks/'], text=True
+              ).splitlines()
+              for path in paths:
+                  parts = path.split('/')
+                  if len(parts) >= 4 and parts[1] not in {'examples', 'finalpool'}:
+                      task = parts[2]
+                      if task in wanted:
+                          source_locations.setdefault(task, set()).add((ref, parts[1]))
+
+          destination = pathlib.Path('tasks/finalpool')
+          if destination.exists():
+              shutil.rmtree(destination)
+          destination.mkdir(parents=True)
+          for task in wanted:
+              locations = source_locations.get(task, set())
+              assert len(locations) == 1, (task, locations)
+              ref, developer = next(iter(locations))
+              source_path = f'tasks/{developer}/{task}'
+              with tempfile.TemporaryDirectory() as temp:
+                  with open(pathlib.Path(temp) / 'task.tar', 'wb') as archive:
+                      subprocess.run(['git', 'archive', ref, source_path], stdout=archive, check=True)
+                  subprocess.run(['tar', '-xf', str(pathlib.Path(temp) / 'task.tar'), '-C', temp], check=True)
+                  source = pathlib.Path(temp) / source_path
+                  target = destination / task
+                  shutil.copytree(source, target)
+              print(f'{task}: {ref}:{source_path}')
+
+          files = [path for path in destination.rglob('*') if path.is_file()]
+          print(f'Assembled {len(wanted)} tasks with {len(files)} files.')
+          PY
+          git add -- tasks/finalpool
+          if ! git diff --cached --quiet; then
+            git commit -m 'Add implemented tasks to final pool'
+          fi
+          git push origin HEAD:refs/heads/finalpool
+
+      - name: Remove temporary workflow branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail --silent --show-error --request DELETE \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/git/refs/heads/finalpool-workflow" || true
